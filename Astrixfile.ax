@@ -1,0 +1,26 @@
+// Default Astrix policy for this repository.
+
+workspace "astrix" {
+  languages = ["go", "typescript", "python"]
+}
+
+guardrail "security_boundaries" {
+  deny when {
+    actor.type == "autonomous_llm" and diff.touches(".github/**", "go.mod", "go.sum")
+  }
+  require_approval when {
+    target.env == "production" or diff.touches("infra/**", "deploy/**")
+  }
+}
+
+stage "verify" {
+  scope   = ast.blast_radius
+  network = "none"
+}
+
+heal "triage_loop" on failure(stage.verify) {
+  max_attempts = 3
+  allow when {
+    actor.type == "autonomous_llm" and diff.modifies_tests("false")
+  }
+}

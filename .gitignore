@@ -1,0 +1,8 @@
+/.env
+/.astrix/
+/astrix
+/astrixd
+/coverage.out
+/coverage.html
+/vendor/
+.DS_Store
