@@ -178,7 +178,7 @@ func (p ProjectProfile) ScopedTestCommand(tests []string) []string {
 			n := strings.TrimSuffix(filepath.Base(t), filepath.Ext(t))
 			names = append(names, n)
 		}
-		return append([]string{"mvn", "test", "-o", "-Dtest=" + strings.Join(names, ",")})
+		return []string{"mvn", "test", "-o", "-Dtest=" + strings.Join(names, ",")}
 	case "gradle":
 		out := []string{"gradle", "test", "--offline"}
 		for _, t := range clean {
