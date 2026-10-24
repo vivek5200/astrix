@@ -1,0 +1,63 @@
+name: Astrix workspace CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  self-validation:
+    name: Build, test, and self-check both modules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Astrix
+        uses: actions/checkout@v4
+        with:
+          path: astrix
+
+      - name: Check out AxLang
+        uses: actions/checkout@v4
+        with:
+          repository: vivek5200/axlang
+          path: axlang
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+          cache: true
+          cache-dependency-path: |
+            axlang/go.sum
+            astrix/go.sum
+
+      - name: Create local Go workspace
+        run: |
+          go work init ./axlang ./astrix
+          go work edit -replace=github.com/vivek5200/axlang=./axlang
+
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l $(git -C axlang ls-files '*.go' | sed 's#^#axlang/#') $(git -C astrix ls-files '*.go' | sed 's#^#astrix/#'))"
+
+      - name: Build all commands
+        run: |
+          mkdir -p bin
+          go build -o bin/axc ./axlang/cmd/axc
+          go build -o bin/axls ./axlang/cmd/axls
+          go build -o bin/astrix ./astrix/cmd/astrix
+          go build -o bin/astrixd ./astrix/cmd/astrixd
+
+      - name: Validate Astrixfile
+        run: ./bin/axc check ./astrix/Astrixfile.ax
+
+      - name: Run AxLang race tests
+        working-directory: axlang
+        run: go test -race ./...
+
+      - name: Run Astrix race tests
+        working-directory: astrix
+        run: go test -race ./...
+
+      - name: Run Astrix graph self-check
+        run: ./bin/astrix graph .

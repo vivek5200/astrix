@@ -13,6 +13,9 @@ import (
 )
 
 func TestLiveDockerAndLLM_ClosedLoopSelfHealing(t *testing.T) {
+	if os.Getenv("ASTRIX_RUN_LIVE_E2E") != "1" {
+		t.Skip("live LLM/Docker end-to-end test is opt-in; set ASTRIX_RUN_LIVE_E2E=1 to run it")
+	}
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("could not locate live E2E test source")

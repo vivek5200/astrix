@@ -2,36 +2,66 @@
 
 [![CI](https://github.com/vivek5200/astrix/actions/workflows/ci.yml/badge.svg)](https://github.com/vivek5200/astrix/actions/workflows/ci.yml)
 
-Astrix is a local-first DevOps verification and policy toolchain. It analyzes repository changes to select impacted tests, evaluates actions against policies written in AxLang, verifies repair patches in a network-isolated Docker sandbox, and exposes tools over MCP.
+Astrix is a local-first DevOps verification engine. It selects tests from source-level dependency impact, enforces AxLang-authored policies, optionally runs bounded LLM-assisted repair in an isolated sandbox, and exposes analysis tools over MCP.
 
-> Astrix is under active development. Review policies and generated changes before using it in production workflows.
+> Astrix is under active development. Review policies, deployment integrations, and generated changes before using them in production workflows.
 
 ## Components
 
-- **`astrix` CLI:** checks `Astrixfile.ax`, builds symbol graphs, verifies changes, optionally requests a bounded repair, and serves MCP over standard input/output.
-- **`astrixd` daemon:** accepts HMAC-signed webhook requests, scans diffs for credentials, and evaluates the configured policy.
-- **AxLang:** the companion language and compiler for workflow, guardrail, repair, and deployment rules.
+- **`astrix` CLI:** validates `Astrixfile.ax`, prints symbol graphs or diff blast radiuses, verifies changes, optionally requests a bounded repair, and serves MCP tools.
+- **`astrixd` daemon:** accepts HMAC-signed webhook requests and checks incoming diffs for credentials and policy violations.
+- **AxLang:** the companion compiler for workspace, stage, policy, repair, and deployment declarations. The standalone compiler lives at [github.com/vivek5200/axlang](https://github.com/vivek5200/axlang).
 
-The graph layer normalizes Go, TypeScript/TSX, and Python symbols into a shared graph representation. The runtime also includes a content-addressable cache, flaky-test tracking, canary SLO evaluation, and OPA-backed policy checks.
+## How the engine works
 
-## Requirements
+### AST blast radius
 
-- Go 1.26 or newer.
-- Docker for isolated patch verification and the live repair flow.
-- An OpenAI-compatible model endpoint for `astrix verify --fix`.
+`pkg/astgraph` normalizes source definitions and references into a shared graph of symbol nodes, definition edges, and reference edges. Go files use the standard-library Go parser; TypeScript/TSX and Python use Tree-sitter adapters. Changed paths and unified-diff line ranges select intersecting definitions, then a reverse-reference traversal computes impacted symbols and test targets.
 
-## Install
+```sh
+astrix graph .
+astrix graph . --symbol ParseConfig
+astrix graph . --diff changes.patch
+```
+
+The JSON graph output includes source locations and file hashes. The `--diff` form emits changed symbols, the transitive impact set, and selected tests.
+
+### Cache and flaky-test history
+
+`pkg/cache` derives stable SHA-256 keys from symbol subgraphs and edges and stores verification outcomes beneath `.astrix/cache`. `pkg/runner` tracks bounded per-test outcome history in SQLite and computes a rolling failure fraction for quarantine decisions. The cache is local to the repository unless an external cache layer is added by the caller.
+
+### Policy gate
+
+`Astrixfile.ax` policies compile through AxLang to Rego v1 and are evaluated by the embedded OPA engine against an `ActionIntent`. Guardrails can deny an action or require approval. Diff glob rules operate on the modified-file list; secret scanning runs at ingress and blocks findings before policy evaluation.
+
+### Bounded repair triage
+
+`astrix verify --fix` runs verification, sanitizes nondeterministic log details, constructs a repair prompt with impact context, and requests a unified diff from an OpenAI-compatible endpoint. The patcher bounds attempts to three, rejects forbidden test changes, applies policy before acceptance, and verifies candidate changes in a disposable Docker sandbox with networking disabled. Keep credentials in environment variables or a local ignored `.env` file.
+
+### MCP server
+
+`astrix mcp serve` runs JSON-RPC over stdio and exposes `astrix_get_blast_radius`, `astrix_evaluate_policy`, and `astrix_run_impacted_tests` so compatible clients can inspect impact, evaluate an intent, and run selected tests.
+
+### Canary watcher
+
+`pkg/canary` maps a validated AxLang deploy declaration to progressive traffic steps, polling intervals, and SLO thresholds. It provides Prometheus query and HTTP traffic-controller adapters. On a breached SLO, the watcher requests rollback through the configured controller. Integrators supply endpoints and deployment credentials.
+
+## Requirements and install
+
+- Go 1.26 or newer for this module.
+- Docker for isolated repair verification.
+- An OpenAI-compatible model endpoint for LLM-assisted repair.
 
 ```sh
 go install github.com/vivek5200/astrix/cmd/astrix@latest
 go install github.com/vivek5200/astrix/cmd/astrixd@latest
 ```
 
-To install the AxLang compiler, see [AxLang](https://github.com/vivek5200/axlang).
+Install `axc` and `axls` from the companion AxLang project.
 
 ## Configure
 
-Place an `Astrixfile.ax` in the repository root. For model-assisted repair, create a local `.env` file (it is ignored by Git):
+Create a local `.env` in the repository root for model-assisted repair:
 
 ```dotenv
 ASTRIX_LLM_BASE_URL=http://localhost:8000/v1
@@ -39,9 +69,11 @@ ASTRIX_LLM_API_KEY=replace-with-your-local-key
 ASTRIX_LLM_MODEL=your-model-name
 ```
 
-`ASTRIX_LLM_ENDPOINT` may be used to specify the full chat-completions URL. The CLI also accepts `OPENROUTER_API_KEY` or `OPENAI_API_KEY`; process environment variables take precedence over `.env`. Never commit real credentials.
+`ASTRIX_LLM_ENDPOINT` can provide a full chat-completions URL. Process environment settings take precedence over `.env`. Never commit real credentials.
 
-## Commands
+The daemon accepts `ASTRIX_WEBHOOK_SECRET` and `ASTRIXD_ADDR`; it serves `/healthz` and an HMAC-SHA256 authenticated `/webhook`. It does not terminate TLS, so deploy it behind a TLS-terminating reverse proxy on a trusted network.
+
+## CLI reference
 
 ```sh
 astrix check [Astrixfile.ax]
@@ -52,17 +84,7 @@ astrix verify --fix
 astrix mcp serve
 ```
 
-`astrix verify --fix` runs the repository tests first. If they fail, it requests a unified diff from the configured model, checks the patch against policy, and tests it in a disposable Docker copy with networking disabled. The repair loop is capped at three attempts and rejects test-file modifications by default.
-
-Run the webhook daemon from a repository containing `Astrixfile.ax`:
-
-```sh
-ASTRIX_WEBHOOK_SECRET='a-long-random-secret' astrixd
-```
-
-The daemon serves `GET /healthz` and an HMAC-SHA256 authenticated `POST /webhook` on port 8080 by default. Set `ASTRIXD_ADDR` to change the listen address. The daemon does not terminate TLS; expose it only on a trusted network or behind a TLS-terminating reverse proxy, and protect the webhook secret as a credential.
-
-## Development and tests
+## Development
 
 ```sh
 go test -race ./...
@@ -70,18 +92,18 @@ go vet ./...
 go build ./cmd/astrix ./cmd/astrixd
 ```
 
-The real Docker sandbox test runs when Docker is available. The live LLM end-to-end test reads the workspace `.env` or process environment and is skipped when no API key is configured:
+The live Docker/LLM scenario is skipped if its endpoint credentials or Docker daemon are unavailable. It can be run explicitly with:
 
 ```sh
 go test -v ./e2e -run '^TestLiveDockerAndLLM_ClosedLoopSelfHealing$' -count=1
 ```
 
-The full live demonstration is available from the workspace checkout as `scripts/live_e2e_demo.sh`.
+Set `ASTRIX_RUN_LIVE_E2E=1` to opt into that test; ordinary `go test ./...` runs the deterministic suite and skips external LLM calls.
 
-## Related project
+The dual-repository workspace includes a self-hosted validation workflow and a root `Makefile`; see the workspace overview for commands.
 
-- [AxLang compiler](https://github.com/vivek5200/axlang)
+See [ARCHITECTURE.md](ARCHITECTURE.md) for graph, policy, repair, and runtime subsystem details.
 
 ## License
 
-Astrix is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE).
