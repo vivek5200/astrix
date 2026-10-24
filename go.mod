@@ -7,7 +7,7 @@ require (
 	github.com/tree-sitter/go-tree-sitter v0.25.0
 	github.com/tree-sitter/tree-sitter-python v0.25.0
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2
-	github.com/vivek5200/axlang v0.1.0
+	github.com/vivek5200/axlang v0.3.0
 	modernc.org/sqlite v1.34.5
 )
 
