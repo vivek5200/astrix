@@ -38,6 +38,8 @@ The JSON graph output includes source locations and file hashes. The `--diff` fo
 
 `Astrixfile.ax` policies compile through AxLang to Rego v1 and are evaluated by the embedded OPA engine against an `ActionIntent`. Guardrails can deny an action or require approval. Diff glob rules operate on the modified-file list; secret scanning runs at ingress and blocks findings before policy evaluation.
 
+When a policy requires approval, the gate returns a `requires_approval` decision and keeps the action blocked until an approved intent is supplied. The current CLI stops on that decision; Astrix does not yet provide operator notifications or an approval inbox. Integrators should surface the request through their CI or deployment platform and require authenticated human approval before resuming.
+
 ### Bounded repair triage
 
 `astrix verify --fix` runs verification, sanitizes nondeterministic log details, constructs a repair prompt with impact context, and requests a unified diff from an OpenAI-compatible endpoint. The patcher bounds attempts to three, rejects forbidden test changes, applies policy before acceptance, and verifies candidate changes in a disposable Docker sandbox with networking disabled. Keep credentials in environment variables or a local ignored `.env` file.
