@@ -16,7 +16,7 @@ Astrix is a local-first DevOps verification engine. It selects tests from source
 
 ### AST blast radius
 
-`pkg/astgraph` normalizes source definitions and references into a shared graph of symbol nodes, definition edges, and reference edges. Go files use the standard-library Go parser; TypeScript/TSX and Python use Tree-sitter adapters. Changed paths and unified-diff line ranges select intersecting definitions, then a reverse-reference traversal computes impacted symbols and test targets.
+`pkg/astgraph` normalizes source definitions and references into a shared graph of symbol nodes, definition edges, and reference edges. Go files use the standard-library Go parser; JavaScript/JSX, TypeScript/TSX, and Python use Tree-sitter adapters. Other UTF-8 text files receive a conservative file-level node, so projects using other languages remain visible to `astrix graph` and changed files are not silently dropped. Add a Tree-sitter adapter to get symbol-level dependency traversal for another language. Binary assets and generated/dependency/cache directories are skipped.
 
 ```sh
 astrix graph .
@@ -24,7 +24,7 @@ astrix graph . --symbol ParseConfig
 astrix graph . --diff changes.patch
 ```
 
-The JSON graph output includes source locations and file hashes. The `--diff` form emits changed symbols, the transitive impact set, and selected tests.
+The JSON graph output includes source locations and file hashes. The `--diff` form emits changed symbols, the transitive impact set, and selected tests. For languages without an AST adapter, blast radius is file-level and cannot infer callers or select language-specific tests reliably.
 
 ### Cache and flaky-test history
 
@@ -37,6 +37,8 @@ The JSON graph output includes source locations and file hashes. The `--diff` fo
 ### Bounded repair triage
 
 `astrix verify --fix` runs verification, sanitizes nondeterministic log details, constructs a repair prompt with impact context, and requests a unified diff from an OpenAI-compatible endpoint. The patcher bounds attempts to three, rejects forbidden test changes, applies policy before acceptance, and verifies candidate changes in a disposable Docker sandbox with networking disabled. Keep credentials in environment variables or a local ignored `.env` file.
+
+`astrix verify` detects common project test runners (Go, npm, pytest, Cargo, Maven/Gradle, .NET, Composer, Bundler, and Make). For another build system or a monorepo with a nonstandard command, set `ASTRIX_TEST_COMMAND` to a JSON argument array, such as `ASTRIX_TEST_COMMAND='["./scripts/check.sh","--ci"]' astrix verify`. This runs the command directly without a shell. For `astrix verify --fix`, set `ASTRIX_SANDBOX_IMAGE` to an image with the required toolchain; the repair sandbox has no network access and mounts existing `node_modules` and `vendor` trees read-only. Other offline dependencies must be available through the selected image or project setup. Common-language AST support and test-command detection are separate capabilities: unknown languages still receive file-level graph coverage, while test execution uses the project's detected or configured command.
 
 ### MCP server
 

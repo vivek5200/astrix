@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // SourceExtractor converts one source file into the shared graph IR.
@@ -27,8 +28,9 @@ type TreeSitterAdapter interface {
 	ExtractTreeSitter(path string, source []byte) (Graph, error)
 }
 
-// ParseSource dispatches Go to the native AST parser and other files to a registered
-// Tree-sitter adapter for their extension (for example .ts or .py).
+// ParseSource uses a language parser when available and otherwise preserves text
+// files as file-level nodes. The fallback keeps changes visible without implying
+// that an unknown language received symbol-level analysis.
 func ParseSource(path string, source []byte, adapters map[string]TreeSitterAdapter) (Graph, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == ".go" {
@@ -37,7 +39,46 @@ func ParseSource(path string, source []byte, adapters map[string]TreeSitterAdapt
 	if adapter := adapters[ext]; adapter != nil {
 		return adapter.ExtractTreeSitter(path, source)
 	}
-	return Graph{}, fmt.Errorf("no AST adapter registered for %s files", ext)
+	if !isText(source) {
+		return Graph{}, fmt.Errorf("no AST adapter registered for %s files and content is not text", ext)
+	}
+	return (FileExtractor{}).Extract(path, source)
+}
+
+// FileExtractor provides conservative file-level graph coverage for formats
+// without a registered parser.
+type FileExtractor struct{}
+
+func (FileExtractor) Extract(path string, source []byte) (Graph, error) {
+	if !isText(source) {
+		return Graph{}, fmt.Errorf("cannot create file-level graph node for binary file %s", path)
+	}
+	lines := strings.Count(string(source), "\n") + 1
+	if len(source) == 0 {
+		lines = 1
+	}
+	digest := sha256.Sum256(source)
+	id := filepath.ToSlash(path) + "::(file)"
+	g := NewGraph()
+	g.AddDefinition(SymbolNode{ID: id, Name: filepath.Base(path), File: filepath.ToSlash(path), Kind: "file", StartLine: 1, EndLine: lines, IsTest: isLikelyTestFile(path), ContentHash: hex.EncodeToString(digest[:])})
+	return g, nil
+}
+
+func isText(source []byte) bool {
+	return utf8.Valid(source) && !strings.ContainsRune(string(source), '\x00')
+}
+
+func isLikelyTestFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	if strings.Contains(base, ".test.") || strings.Contains(base, ".spec.") || strings.HasSuffix(base, "_test.go") || strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, "_test.rs") || strings.HasSuffix(base, "_spec.rb") {
+		return true
+	}
+	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(path)), "/") {
+		if part == "test" || part == "tests" || part == "__tests__" {
+			return true
+		}
+	}
+	return false
 }
 
 // GoExtractor uses go/parser and go/ast to create definition and call-reference edges.
@@ -121,13 +162,12 @@ func LoadPath(path string) (Graph, error) {
 				}
 				return nil
 			}
-			ext := strings.ToLower(filepath.Ext(entry.Name()))
-			if ext != ".go" && ext != ".ts" && ext != ".tsx" && ext != ".py" && ext != ".mts" && ext != ".cts" {
-				return nil
-			}
 			data, err := os.ReadFile(current)
 			if err != nil {
 				return err
+			}
+			if !isText(data) {
+				return nil
 			}
 			rel, err := filepath.Rel(path, current)
 			if err != nil {
@@ -156,7 +196,7 @@ func LoadPath(path string) (Graph, error) {
 
 func skippedDirectory(name string) bool {
 	switch name {
-	case ".git", "node_modules", "vendor", ".astrix":
+	case ".git", "node_modules", "vendor", ".astrix", ".venv", "venv", "__pycache__", ".next", ".cache", "target", "dist", "build", "coverage":
 		return true
 	}
 	return false

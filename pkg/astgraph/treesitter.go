@@ -33,9 +33,14 @@ func TSXTreeSitter() TreeSitterAdapter {
 	return NativeTreeSitterAdapter{LanguageName: "typescript", Language: sitter.NewLanguage(typescript.LanguageTSX())}
 }
 
-// DefaultTreeSitterAdapters returns standard .py and .ts extractors.
+// DefaultTreeSitterAdapters returns built-in Go, JavaScript/TypeScript, and Python extractors.
 func DefaultTreeSitterAdapters() map[string]TreeSitterAdapter {
-	return map[string]TreeSitterAdapter{".py": PythonTreeSitter(), ".ts": TypeScriptTreeSitter(), ".mts": TypeScriptTreeSitter(), ".cts": TypeScriptTreeSitter(), ".tsx": TSXTreeSitter()}
+	return map[string]TreeSitterAdapter{
+		".py": PythonTreeSitter(),
+		".js": TypeScriptTreeSitter(), ".mjs": TypeScriptTreeSitter(), ".cjs": TypeScriptTreeSitter(),
+		".jsx": TSXTreeSitter(),
+		".ts":  TypeScriptTreeSitter(), ".mts": TypeScriptTreeSitter(), ".cts": TypeScriptTreeSitter(), ".tsx": TSXTreeSitter(),
+	}
 }
 
 // ExtractTreeSitter normalizes Python or TypeScript definitions and call sites.
@@ -156,7 +161,7 @@ func callName(call *sitter.Node, source []byte) string {
 }
 func isTestFile(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
-	return strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx") || strings.HasSuffix(base, ".test.mts") || strings.HasSuffix(base, ".spec.mts")
+	return strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, ".test.js") || strings.HasSuffix(base, ".spec.js") || strings.HasSuffix(base, ".test.jsx") || strings.HasSuffix(base, ".spec.jsx") || strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx") || strings.HasSuffix(base, ".test.mjs") || strings.HasSuffix(base, ".spec.mjs") || strings.HasSuffix(base, ".test.mts") || strings.HasSuffix(base, ".spec.mts")
 }
 func looksLikeTest(name string) bool {
 	lower := strings.ToLower(name)

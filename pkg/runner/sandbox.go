@@ -46,8 +46,12 @@ func (s DockerSandbox) ApplyAndTest(ctx context.Context, diff string) error {
 	if err = os.WriteFile(patchPath, []byte(diff), 0o600); err != nil {
 		return err
 	}
+	command := s.TestCommand
+	if len(command) == 0 {
+		command = []string{"go", "test", "./..."}
+	}
 	moduleCache, goCache, goRoot := s.ModuleCache, s.GoCache, s.GoRoot
-	if moduleCache == "" || goCache == "" || goRoot == "" {
+	if commandUsesGo(command) && (moduleCache == "" || goCache == "" || goRoot == "") {
 		hostModule, hostGo, hostRoot, goVersion, cacheErr := hostGoEnvironment(ctx)
 		if cacheErr != nil {
 			return cacheErr
@@ -77,11 +81,58 @@ func (s DockerSandbox) ApplyAndTest(ctx context.Context, diff string) error {
 	if err = applyPatchToCopy(temp, diff); err != nil {
 		return fmt.Errorf("patch does not apply cleanly: %w", err)
 	}
-	command := s.TestCommand
-	if len(command) == 0 {
-		command = []string{"go", "test", "./..."}
+	dependencies, err := dependencyMounts(s.Root)
+	if err != nil {
+		return fmt.Errorf("find offline project dependencies: %w", err)
 	}
-	return runDocker(ctx, temp, image, moduleCache, goCache, goRoot, command...)
+	return runDocker(ctx, temp, image, moduleCache, goCache, goRoot, dependencies, command...)
+}
+
+func commandUsesGo(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	if filepath.Base(command[0]) == "go" {
+		return true
+	}
+	for _, arg := range command[1:] {
+		for _, field := range strings.Fields(arg) {
+			if field == "go" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type dependencyMount struct {
+	source      string
+	destination string
+}
+
+func dependencyMounts(root string) ([]dependencyMount, error) {
+	var mounts []dependencyMount
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() || path == root {
+			return nil
+		}
+		if entry.Name() == "node_modules" || entry.Name() == "vendor" {
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			mounts = append(mounts, dependencyMount{source: path, destination: filepath.ToSlash(rel)})
+			return filepath.SkipDir
+		}
+		if entry.Name() == ".git" || entry.Name() == ".astrix" {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return mounts, err
 }
 
 func hostGoEnvironment(ctx context.Context) (moduleCache, goCache, goRoot, goVersion string, err error) {
@@ -126,7 +177,7 @@ func applyPatchToCopy(root, diff string) error {
 	return nil
 }
 
-func runDocker(ctx context.Context, root, image, moduleCache, goCache, goRoot string, command ...string) error {
+func runDocker(ctx context.Context, root, image, moduleCache, goCache, goRoot string, dependencies []dependencyMount, command ...string) error {
 	currentUser, err := user.Current()
 	if err != nil {
 		return fmt.Errorf("resolve host user for sandbox cache ownership: %w", err)
@@ -135,6 +186,9 @@ func runDocker(ctx context.Context, root, image, moduleCache, goCache, goRoot st
 		return fmt.Errorf("resolve host user for sandbox cache ownership: missing uid or gid")
 	}
 	args := []string{"run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", currentUser.Uid + ":" + currentUser.Gid, "-v", root + ":/workspace", "-w", "/workspace"}
+	for _, dependency := range dependencies {
+		args = append(args, "-v", dependency.source+":/workspace/"+dependency.destination+":ro")
+	}
 	if moduleCache != "" {
 		args = append(args, "-v", moduleCache+":/astrix-modcache:ro", "-e", "GOMODCACHE=/astrix-modcache", "-e", "GOPROXY=off", "-e", "GOSUMDB=off")
 	}

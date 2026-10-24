@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+)
 
 func TestParseGraphArgs(t *testing.T) {
 	tests := []struct {
@@ -22,5 +27,32 @@ func TestParseGraphArgs(t *testing.T) {
 	}
 	if _, _, _, err := parseGraphArgs([]string{".", "--diff", "x", "--symbol", "Add"}); err == nil {
 		t.Fatal("expected mutually exclusive graph options to fail")
+	}
+}
+
+func TestProjectTestCommandDetectsNodeAndSupportsCustomArgv(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{"test":"vitest"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ASTRIX_TEST_COMMAND", "")
+	command, err := projectTestCommand(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"npm", "test"}; !reflect.DeepEqual(command, want) {
+		t.Fatalf("projectTestCommand()=%v, want %v", command, want)
+	}
+	t.Setenv("ASTRIX_TEST_COMMAND", `["./ci/check.sh","--ci"]`)
+	command, err = projectTestCommand(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"./ci/check.sh", "--ci"}; !reflect.DeepEqual(command, want) {
+		t.Fatalf("custom projectTestCommand()=%v, want %v", command, want)
+	}
+	t.Setenv("ASTRIX_TEST_COMMAND", `"npm test"`)
+	if _, err := projectTestCommand(root); err == nil {
+		t.Fatal("invalid string command should be rejected; expected a JSON argv array")
 	}
 }

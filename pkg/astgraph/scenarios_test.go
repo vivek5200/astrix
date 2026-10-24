@@ -38,6 +38,27 @@ func TestPolyglotBlastRadiusCrossesGoTypeScriptTSXAndPython(t *testing.T) {
 	}
 }
 
+func TestJavaScriptAndUnknownTextFormatsStayInGraph(t *testing.T) {
+	files := map[string][]byte{
+		"src/app.js":          []byte("function render() { return 1; }\n"),
+		"src/app.test.js":     []byte("function testRender() { render(); }\n"),
+		"tests/main.rs":       []byte("fn main() { println!(\"hello\"); }\n"),
+		"config/custom.build": []byte("compile = true\n"),
+	}
+	graph, err := astgraph.ParseFilesWithAdapters(files, astgraph.DefaultTreeSitterAdapters())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"src/app.js::render", "src/app.test.js::testRender", "tests/main.rs::(file)", "config/custom.build::(file)"} {
+		if _, ok := graph.Nodes[id]; !ok {
+			t.Errorf("graph missing %s; nodes=%v", id, graph.Nodes)
+		}
+	}
+	if !graph.Nodes["src/app.test.js::testRender"].IsTest || !graph.Nodes["tests/main.rs::(file)"].IsTest {
+		t.Fatal("JavaScript test and tests-directory fallback should be marked as test nodes")
+	}
+}
+
 func TestCyclicGraphTraversalAndMerkleHashTerminate(t *testing.T) {
 	polyglotFiles := map[string][]byte{
 		"ping.ts": []byte("import { Pong } from './pong'\nexport function Ping() { Pong() }\n"),

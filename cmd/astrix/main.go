@@ -106,11 +106,12 @@ func run(args []string, stdout, stderr *os.File) int {
 				}
 			}
 		}
-		testArgs := []string{"test", "./..."}
-		if _, err := os.Stat(filepath.Join(root, "astrix", "go.mod")); err == nil {
-			testArgs = []string{"test", "./astrix/...", "./axlang/..."}
+		testCommand, commandErr := projectTestCommand(root)
+		if commandErr != nil {
+			fmt.Fprintln(stderr, commandErr)
+			return 2
 		}
-		initial := exec.CommandContext(ctx, "go", testArgs...)
+		initial := exec.CommandContext(ctx, testCommand[0], testCommand[1:]...)
 		initial.Dir = root
 		output, err := initial.CombinedOutput()
 		if err == nil {
@@ -276,11 +277,77 @@ func configPath(root string) string {
 func configuredPatcher(root string) (*triage.Patcher, error) {
 	modelFromFile := configuredModel(configPath(root))
 	llm := triage.ResolveLLMConfig(os.Getenv, modelFromFile)
-	command := []string{"go", "test", "./..."}
-	if _, err := os.Stat(filepath.Join(root, "astrix", "go.mod")); err == nil {
-		command = []string{"go", "test", "./astrix/...", "./axlang/..."}
+	command, err := projectTestCommand(root)
+	if err != nil {
+		return nil, err
 	}
-	return &triage.Patcher{Model: triage.OpenAICompatModel{Endpoint: llm.Endpoint, APIKey: llm.APIKey, Model: llm.Model}, Sandbox: runner.DockerSandbox{Root: root, Image: envOr("ASTRIX_SANDBOX_IMAGE", "golang:1.27"), TestCommand: command}, MaxAttempts: 3}, nil
+	return &triage.Patcher{Model: triage.OpenAICompatModel{Endpoint: llm.Endpoint, APIKey: llm.APIKey, Model: llm.Model}, Sandbox: runner.DockerSandbox{Root: root, Image: envOr("ASTRIX_SANDBOX_IMAGE", defaultSandboxImage(command)), TestCommand: command}, MaxAttempts: 3}, nil
+}
+
+// projectTestCommand resolves an argument-safe test command. Repositories with
+// custom build systems can provide a JSON argv array in ASTRIX_TEST_COMMAND.
+func projectTestCommand(root string) ([]string, error) {
+	if value := strings.TrimSpace(os.Getenv("ASTRIX_TEST_COMMAND")); value != "" {
+		var command []string
+		if err := json.Unmarshal([]byte(value), &command); err != nil || len(command) == 0 || strings.TrimSpace(command[0]) == "" {
+			return nil, fmt.Errorf("ASTRIX_TEST_COMMAND must be a JSON array of command arguments, for example [\"npm\",\"test\"]")
+		}
+		return command, nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "astrix", "go.mod")); err == nil {
+		return []string{"go", "test", "./astrix/...", "./axlang/..."}, nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "mvnw")); err == nil {
+		return []string{"./mvnw", "test"}, nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "gradlew")); err == nil {
+		return []string{"./gradlew", "test"}, nil
+	}
+	checks := []struct {
+		files   []string
+		command []string
+	}{
+		{[]string{"go.mod"}, []string{"go", "test", "./..."}},
+		{[]string{"package.json"}, []string{"npm", "test"}},
+		{[]string{"pyproject.toml", "pytest.ini", "tox.ini"}, []string{"python", "-m", "pytest"}},
+		{[]string{"Cargo.toml"}, []string{"cargo", "test"}},
+		{[]string{"pom.xml"}, []string{"mvn", "test"}},
+		{[]string{"build.gradle", "build.gradle.kts"}, []string{"gradle", "test"}},
+		{[]string{"*.sln", "*.csproj"}, []string{"dotnet", "test"}},
+		{[]string{"composer.json"}, []string{"composer", "test"}},
+		{[]string{"Gemfile"}, []string{"bundle", "exec", "rake", "test"}},
+		{[]string{"Makefile"}, []string{"make", "test"}},
+	}
+	for _, check := range checks {
+		for _, pattern := range check.files {
+			matches, _ := filepath.Glob(filepath.Join(root, pattern))
+			if len(matches) > 0 {
+				command := append([]string(nil), check.command...)
+				return command, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("cannot detect a project test command in %s; set ASTRIX_TEST_COMMAND to a JSON argv array (for example [\"make\",\"test\"])", root)
+}
+
+func defaultSandboxImage(command []string) string {
+	if len(command) == 0 {
+		return "golang:1.27"
+	}
+	switch strings.TrimPrefix(filepath.Base(command[0]), "./") {
+	case "npm", "node", "yarn", "pnpm":
+		return "node:22"
+	case "python", "python3", "pytest":
+		return "python:3.13"
+	case "cargo", "rustc":
+		return "rust:1.89"
+	case "mvn", "gradle", "mvnw", "gradlew":
+		return "maven:3-eclipse-temurin-21"
+	case "dotnet":
+		return "mcr.microsoft.com/dotnet/sdk:9.0"
+	default:
+		return "golang:1.27"
+	}
 }
 
 func configuredModel(path string) string {
