@@ -4,6 +4,10 @@
 
 Astrix is a local-first DevOps verification engine. It selects tests from source-level dependency impact, enforces AxLang-authored policies, optionally runs bounded LLM-assisted repair in an isolated sandbox, and exposes analysis tools over MCP.
 
+<p align="center">
+  <img src="docs/assets/astrix-demo.svg" alt="Astrix visual control plane showing AST blast radius, LLM repair, OPA, sandbox verification, Merkle caching, and canary telemetry" width="960">
+</p>
+
 > Astrix is under active development. Review policies, deployment integrations, and generated changes before using them in production workflows.
 
 ## Components
