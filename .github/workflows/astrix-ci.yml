@@ -33,9 +33,7 @@ jobs:
             astrix/go.sum
 
       - name: Create local Go workspace
-        run: |
-          go work init ./axlang ./astrix
-          go work edit -replace=github.com/vivek5200/axlang=./axlang
+        run: go work init ./axlang ./astrix
 
       - name: Check Go formatting
         run: test -z "$(gofmt -l $(git -C axlang ls-files '*.go' | sed 's#^#axlang/#') $(git -C astrix ls-files '*.go' | sed 's#^#astrix/#'))"
