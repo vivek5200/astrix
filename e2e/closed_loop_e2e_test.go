@@ -230,7 +230,7 @@ heal "triage_loop" on failure(stage.verify) {
 		t.Fatal(err)
 	}
 	dockerLog := filepath.Join(cliTemp, "docker-network")
-	dockerWrapper := "#!/bin/sh\n[ \"$1\" = run ] || exit 64\nshift\nroot=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --rm) shift ;;\n    --network=none) echo none >> \"$ASTRIX_DOCKER_LOG\"; shift ;;\n    --*) shift ;;\n    -v) case \"$2\" in *:/workspace) root=${2%:/workspace} ;; esac; shift 2 ;;\n    -w|-e) shift 2 ;;\n    *) image=$1; shift; break ;;\n  esac\ndone\n[ -n \"$root\" ] || exit 65\ncd \"$root\" || exit 66\nexec \"$@\"\n"
+	dockerWrapper := "#!/bin/sh\n[ \"$1\" = run ] || exit 64\nshift\nroot=\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --rm) shift ;;\n    --network=none) echo none >> \"$ASTRIX_DOCKER_LOG\"; shift ;;\n    --user) shift 2 ;;\n    --*) shift ;;\n    -v) case \"$2\" in *:/workspace) root=${2%:/workspace} ;; esac; shift 2 ;;\n    -w|-e) shift 2 ;;\n    *) image=$1; shift; break ;;\n  esac\ndone\n[ -n \"$root\" ] || exit 65\ncd \"$root\" || exit 66\nexec \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "docker"), []byte(dockerWrapper), 0o755); err != nil {
 		t.Fatal(err)
 	}
