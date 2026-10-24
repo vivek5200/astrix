@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -126,7 +127,14 @@ func applyPatchToCopy(root, diff string) error {
 }
 
 func runDocker(ctx context.Context, root, image, moduleCache, goCache, goRoot string, command ...string) error {
-	args := []string{"run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges", "-v", root + ":/workspace", "-w", "/workspace"}
+	currentUser, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("resolve host user for sandbox cache ownership: %w", err)
+	}
+	if currentUser.Uid == "" || currentUser.Gid == "" {
+		return fmt.Errorf("resolve host user for sandbox cache ownership: missing uid or gid")
+	}
+	args := []string{"run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", currentUser.Uid + ":" + currentUser.Gid, "-v", root + ":/workspace", "-w", "/workspace"}
 	if moduleCache != "" {
 		args = append(args, "-v", moduleCache+":/astrix-modcache:ro", "-e", "GOMODCACHE=/astrix-modcache", "-e", "GOPROXY=off", "-e", "GOSUMDB=off")
 	}
