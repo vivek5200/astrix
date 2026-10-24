@@ -19,6 +19,7 @@ type DockerSandbox struct {
 	GoCache     string
 	GoRoot      string
 	TestCommand []string
+	Profile     *ProjectProfile
 }
 
 // ApplyAndTest validates and applies the patch in a disposable copy, then runs
@@ -28,6 +29,18 @@ func (s DockerSandbox) ApplyAndTest(ctx context.Context, diff string) error {
 		return fmt.Errorf("sandbox root is required")
 	}
 	image := s.Image
+	if s.Profile != nil {
+		if s.Image == "" && s.Profile.Image != "" {
+			image = s.Profile.Image
+		}
+		if s.Profile.Dockerfile != "" {
+			build := exec.CommandContext(ctx, "docker", "build", "-t", image, "-f", s.Profile.Dockerfile, s.Root)
+			output, e := build.CombinedOutput()
+			if e != nil {
+				return fmt.Errorf("build custom sandbox image: %w: %s", e, strings.TrimSpace(string(output)))
+			}
+		}
+	}
 	if image == "" {
 		image = "golang:1.27"
 	}
@@ -47,6 +60,9 @@ func (s DockerSandbox) ApplyAndTest(ctx context.Context, diff string) error {
 		return err
 	}
 	command := s.TestCommand
+	if len(command) == 0 && s.Profile != nil {
+		command = s.Profile.TestCommand
+	}
 	if len(command) == 0 {
 		command = []string{"go", "test", "./..."}
 	}
@@ -85,6 +101,40 @@ func (s DockerSandbox) ApplyAndTest(ctx context.Context, diff string) error {
 	if err != nil {
 		return fmt.Errorf("find offline project dependencies: %w", err)
 	}
+	if s.Profile != nil {
+		for _, mount := range s.Profile.Mounts {
+			// Go cache bind mounts are managed by the sandbox itself so it can
+			// isolate writable build cache state from the user's regular cache.
+			if mount.Destination == "/astrix-modcache" || mount.Destination == "/astrix-gocache" {
+				continue
+			}
+			// Explicit profile mounts win over dependency mounts discovered from
+			// the project tree, and Docker rejects duplicate target paths.
+			target := mount.Destination
+			if !strings.HasPrefix(target, "/") {
+				target = "/workspace/" + target
+			}
+			filtered := dependencies[:0]
+			for _, existing := range dependencies {
+				existingTarget := existing.destination
+				if !strings.HasPrefix(existingTarget, "/") {
+					existingTarget = "/workspace/" + existingTarget
+				}
+				if existingTarget != target {
+					filtered = append(filtered, existing)
+				}
+			}
+			dependencies = filtered
+			source := mount.Source
+			if !filepath.IsAbs(source) {
+				source = filepath.Join(s.Root, source)
+			}
+			if _, e := os.Stat(source); e != nil {
+				return fmt.Errorf("sandbox mount source %q: %w", source, e)
+			}
+			dependencies = append(dependencies, dependencyMount{source: source, destination: mount.Destination, mode: mount.Mode})
+		}
+	}
 	return runDocker(ctx, temp, image, moduleCache, goCache, goRoot, dependencies, command...)
 }
 
@@ -108,6 +158,7 @@ func commandUsesGo(command []string) bool {
 type dependencyMount struct {
 	source      string
 	destination string
+	mode        string
 }
 
 func dependencyMounts(root string) ([]dependencyMount, error) {
@@ -124,7 +175,7 @@ func dependencyMounts(root string) ([]dependencyMount, error) {
 			if err != nil {
 				return err
 			}
-			mounts = append(mounts, dependencyMount{source: path, destination: filepath.ToSlash(rel)})
+			mounts = append(mounts, dependencyMount{source: path, destination: filepath.ToSlash(rel), mode: "ro"})
 			return filepath.SkipDir
 		}
 		if entry.Name() == ".git" || entry.Name() == ".astrix" {
@@ -187,7 +238,15 @@ func runDocker(ctx context.Context, root, image, moduleCache, goCache, goRoot st
 	}
 	args := []string{"run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", currentUser.Uid + ":" + currentUser.Gid, "-v", root + ":/workspace", "-w", "/workspace"}
 	for _, dependency := range dependencies {
-		args = append(args, "-v", dependency.source+":/workspace/"+dependency.destination+":ro")
+		mode := dependency.mode
+		if mode == "" {
+			mode = "ro"
+		}
+		destination := dependency.destination
+		if !strings.HasPrefix(destination, "/") {
+			destination = "/workspace/" + destination
+		}
+		args = append(args, "-v", dependency.source+":"+destination+":"+mode)
 	}
 	if moduleCache != "" {
 		args = append(args, "-v", moduleCache+":/astrix-modcache:ro", "-e", "GOMODCACHE=/astrix-modcache", "-e", "GOPROXY=off", "-e", "GOSUMDB=off")

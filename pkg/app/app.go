@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,9 +14,12 @@ import (
 	"github.com/vivek5200/astrix/pkg/astgraph"
 	"github.com/vivek5200/astrix/pkg/ingress"
 	"github.com/vivek5200/astrix/pkg/policy"
+	"github.com/vivek5200/astrix/pkg/runner"
+	"github.com/vivek5200/axlang/ast"
 	"github.com/vivek5200/axlang/parser"
 	"github.com/vivek5200/axlang/sema"
 	"github.com/vivek5200/axlang/targets/rego"
+	"github.com/vivek5200/axlang/token"
 )
 
 // ValidateAstrixfile parses, checks and compiles the configured policy module.
@@ -60,40 +64,82 @@ func Impact(root, diff string) (astgraph.ImpactSet, []ingress.FileChange, error)
 	if err != nil {
 		return astgraph.ImpactSet{}, nil, err
 	}
-	sources := map[string][]byte{}
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if rel != "." && (entry.Name() == ".git" || entry.Name() == ".astrix" || entry.Name() == "vendor" || entry.Name() == "node_modules") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".go" && ext != ".py" && ext != ".ts" && ext != ".mts" && ext != ".cts" && ext != ".tsx" {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		sources[filepath.ToSlash(rel)] = data
-		return nil
-	})
-	if err != nil {
-		return astgraph.ImpactSet{}, nil, err
-	}
-	graph, err := astgraph.ParseFilesWithAdapters(sources, astgraph.DefaultTreeSitterAdapters())
+	graph, err := astgraph.LoadPath(root)
 	if err != nil {
 		return astgraph.ImpactSet{}, changes, err
 	}
 	return astgraph.BlastRadius(graph, changes), changes, nil
+}
+
+// ResolveProjectProfile applies environment overrides, then .ax stage values,
+// then manifest-based project defaults.
+func ResolveProjectProfile(root, astrixfile string) (runner.ProjectProfile, error) {
+	profile, err := runner.DetectProjectProfile(root)
+	if err != nil {
+		return profile, err
+	}
+	if data, readErr := os.ReadFile(astrixfile); readErr == nil {
+		file, diags := parser.New(astrixfile, string(data)).Parse()
+		if len(diags) > 0 {
+			return profile, formatDiagnostics(diags, string(data))
+		}
+		if semaDiags := sema.Check(file); len(semaDiags) > 0 {
+			return profile, formatDiagnostics(semaDiags, string(data))
+		}
+		for _, decl := range file.Decls {
+			stage, ok := decl.(*ast.StageDecl)
+			if !ok || stage.Name != "verify" {
+				continue
+			}
+			for _, field := range stage.Fields {
+				switch field.Name {
+				case "image":
+					if value, ok := field.Value.(*ast.LiteralExpr); ok && value.Kind == token.String {
+						profile.Image = value.Value
+					}
+				case "command":
+					if value, ok := field.Value.(*ast.LiteralExpr); ok && value.Kind == token.String {
+						profile.TestCommand = strings.Fields(value.Value)
+						profile.CommandOverridden = true
+					}
+				case "mounts":
+					profile.Mounts = nil
+					if list, ok := field.Value.(*ast.ListExpr); ok {
+						for _, item := range list.Elements {
+							if value, ok := item.(*ast.LiteralExpr); ok {
+								parts := strings.Split(value.Value, ":")
+								host := parts[0]
+								if strings.HasPrefix(host, "~/") {
+									home, _ := os.UserHomeDir()
+									host = filepath.Join(home, strings.TrimPrefix(host, "~/"))
+								} else if strings.HasPrefix(host, "./") || strings.HasPrefix(host, ".") {
+									host = filepath.Join(root, host)
+								}
+								dest := parts[1]
+								mode := "ro"
+								if len(parts) == 3 {
+									mode = parts[2]
+								}
+								profile.Mounts = append(profile.Mounts, runner.ProfileMount{Source: host, Destination: dest, Mode: mode})
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if image := strings.TrimSpace(os.Getenv("ASTRIX_SANDBOX_IMAGE")); image != "" {
+		profile.Image = image
+	}
+	if command := strings.TrimSpace(os.Getenv("ASTRIX_TEST_COMMAND")); command != "" {
+		var argv []string
+		if json.Unmarshal([]byte(command), &argv) == nil && len(argv) > 0 {
+			profile.TestCommand = argv
+		} else {
+			profile.TestCommand = strings.Fields(command)
+		}
+	}
+	return profile, nil
 }
 
 // RunTests runs either all Go tests or the packages containing the selected test nodes.

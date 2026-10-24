@@ -39,6 +39,10 @@ func ParseSource(path string, source []byte, adapters map[string]TreeSitterAdapt
 	if adapter := adapters[ext]; adapter != nil {
 		return adapter.ExtractTreeSitter(path, source)
 	}
+	switch ext {
+	case ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".kt", ".swift":
+		return (PolyglotExtractor{}).Extract(path, source)
+	}
 	if !isText(source) {
 		return Graph{}, fmt.Errorf("no AST adapter registered for %s files and content is not text", ext)
 	}
@@ -60,7 +64,12 @@ func (FileExtractor) Extract(path string, source []byte) (Graph, error) {
 	digest := sha256.Sum256(source)
 	id := filepath.ToSlash(path) + "::(file)"
 	g := NewGraph()
-	g.AddDefinition(SymbolNode{ID: id, Name: filepath.Base(path), File: filepath.ToSlash(path), Kind: "file", StartLine: 1, EndLine: lines, IsTest: isLikelyTestFile(path), ContentHash: hex.EncodeToString(digest[:])})
+	name := filepath.Base(path)
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".sql", ".proto", ".graphql", ".yaml", ".yml":
+		name = strings.TrimSuffix(name, filepath.Ext(name))
+	}
+	g.AddDefinition(SymbolNode{ID: id, Name: name, File: filepath.ToSlash(path), Kind: "file", StartLine: 1, EndLine: lines, IsTest: isLikelyTestFile(path), ContentHash: hex.EncodeToString(digest[:])})
 	return g, nil
 }
 
@@ -70,7 +79,7 @@ func isText(source []byte) bool {
 
 func isLikelyTestFile(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
-	if strings.Contains(base, ".test.") || strings.Contains(base, ".spec.") || strings.HasSuffix(base, "_test.go") || strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, "_test.rs") || strings.HasSuffix(base, "_spec.rb") {
+	if strings.Contains(base, ".test.") || strings.Contains(base, ".spec.") || strings.HasSuffix(base, "_test.go") || strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, "_test.rs") || strings.HasSuffix(base, "_spec.rb") || strings.HasSuffix(base, "_test.rb") || strings.HasSuffix(base, "test.php") || strings.HasSuffix(base, "test.java") || strings.HasSuffix(base, "spec.kt") || strings.HasSuffix(base, "_test.cpp") || strings.HasSuffix(base, "_test.c") {
 		return true
 	}
 	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(path)), "/") {
@@ -180,7 +189,29 @@ func LoadPath(path string) (Graph, error) {
 			return Graph{}, err
 		}
 	}
-	g, err := ParseFilesWithAdapters(files, DefaultTreeSitterAdapters())
+	adapters := DefaultTreeSitterAdapters()
+	queryDir := filepath.Join(path, ".astrix", "queries")
+	if info.IsDir() {
+		if entries, readErr := os.ReadDir(queryDir); readErr == nil {
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".scm") {
+					continue
+				}
+				ext := "." + strings.TrimSuffix(entry.Name(), ".scm")
+				data, e := os.ReadFile(filepath.Join(queryDir, entry.Name()))
+				if e != nil {
+					return Graph{}, e
+				}
+				if adapter, ok := adapters[ext].(NativeTreeSitterAdapter); ok {
+					adapter.QuerySource = string(data)
+					adapters[ext] = adapter
+				} else {
+					adapters[ext] = QueryLexicalAdapter{QuerySource: string(data)}
+				}
+			}
+		}
+	}
+	g, err := ParseFilesWithAdapters(files, adapters)
 	if err != nil {
 		return Graph{}, err
 	}
@@ -266,5 +297,66 @@ func ParseFilesWithAdapters(files map[string][]byte, adapters map[string]TreeSit
 		part.FileHashes = map[string]string{filepath.ToSlash(path): hex.EncodeToString(digest[:])}
 		g.Merge(part)
 	}
+	// Schema and configuration files stay file-level nodes. Link source files
+	// that mention their basename or stem so schema edits reach consumers.
+	for path, source := range files {
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".sql" && ext != ".proto" && ext != ".graphql" && ext != ".yaml" && ext != ".yml" {
+			continue
+		}
+		base, stem := filepath.Base(path), strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		symbols := schemaSymbols(ext, source)
+		for sourcePath, content := range files {
+			if sourcePath == path || strings.EqualFold(filepath.Ext(sourcePath), ext) {
+				continue
+			}
+			text := string(content)
+			mentions := strings.Contains(strings.ToLower(text), strings.ToLower(base)) || strings.Contains(strings.ToLower(text), strings.ToLower(stem))
+			if !mentions {
+				for _, symbol := range symbols {
+					if containsIdentifier(text, symbol) {
+						mentions = true
+						break
+					}
+				}
+			}
+			if mentions {
+				for id, node := range g.Nodes {
+					if node.File == sourcePath {
+						g.AddReference(id, stem)
+						break
+					}
+				}
+			}
+		}
+	}
 	return g, nil
+}
+
+func containsIdentifier(source, name string) bool {
+	for _, word := range strings.FieldsFunc(source, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
+	}) {
+		if strings.EqualFold(word, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func schemaSymbols(ext string, source []byte) []string {
+	words := strings.FieldsFunc(string(source), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
+	})
+	var out []string
+	for i := 0; i+1 < len(words); i++ {
+		keyword := strings.ToLower(words[i])
+		if ext == ".sql" && keyword == "table" || ext == ".proto" && keyword == "message" || ext == ".graphql" && (keyword == "type" || keyword == "enum" || keyword == "input" || keyword == "interface") {
+			name := strings.Trim(words[i+1], "_")
+			if name != "" {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
 }

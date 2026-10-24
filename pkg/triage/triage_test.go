@@ -90,13 +90,17 @@ func TestOpenAICompatModelReturnsUnifiedDiff(t *testing.T) {
 			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
 		}
 		var request struct {
-			Model string `json:"model"`
+			Model       string  `json:"model"`
+			Temperature float64 `json:"temperature"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 		}
 		if request.Model != "qwen" {
 			t.Errorf("model=%q", request.Model)
+		}
+		if request.Temperature != 0 {
+			t.Errorf("temperature=%v, want zero", request.Temperature)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": "```diff\n" + patch + "```"}}}})
 	}))
@@ -106,7 +110,7 @@ func TestOpenAICompatModelReturnsUnifiedDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(got) != strings.TrimSpace(patch) {
+	if !strings.Contains(got, strings.TrimSpace(patch)) || !strings.Contains(got, "```diff") {
 		t.Fatalf("patch=%q", got)
 	}
 }

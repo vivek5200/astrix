@@ -73,7 +73,7 @@ func (m OpenAICompatModel) ProposePatch(ctx context.Context, prompt string) (str
 	if len(response.Choices) == 0 {
 		return "", fmt.Errorf("LLM returned no patch choice")
 	}
-	return stripDiffFence(response.Choices[0].Message.Content), nil
+	return response.Choices[0].Message.Content, nil
 }
 
 func stripDiffFence(value string) string {

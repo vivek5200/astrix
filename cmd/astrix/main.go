@@ -107,6 +107,12 @@ func run(args []string, stdout, stderr *os.File) int {
 			}
 		}
 		testCommand, commandErr := projectTestCommand(root)
+		if strings.TrimSpace(os.Getenv("ASTRIX_TEST_COMMAND")) == "" {
+			if profile, profileErr := app.ResolveProjectProfile(root, configPath(root)); profileErr == nil && profile.CommandOverridden && len(profile.TestCommand) > 0 {
+				testCommand = profile.TestCommand
+				commandErr = nil
+			}
+		}
 		if commandErr != nil {
 			fmt.Fprintln(stderr, commandErr)
 			return 2
@@ -135,7 +141,7 @@ func run(args []string, stdout, stderr *os.File) int {
 			fmt.Fprintln(stderr, e)
 			return 1
 		}
-		patcher, e := configuredPatcher(root)
+		patcher, e := configuredPatcher(root, impact.Tests)
 		if e != nil {
 			fmt.Fprintln(stderr, e)
 			return 1
@@ -274,14 +280,35 @@ func configPath(root string) string {
 	}
 	return filepath.Join(filepath.Dir(root), "Astrixfile.ax")
 }
-func configuredPatcher(root string) (*triage.Patcher, error) {
+func configuredPatcher(root string, impactedTests []string) (*triage.Patcher, error) {
+	if _, err := app.ValidateAstrixfile(configPath(root)); err != nil {
+		return nil, err
+	}
 	modelFromFile := configuredModel(configPath(root))
 	llm := triage.ResolveLLMConfig(os.Getenv, modelFromFile)
 	command, err := projectTestCommand(root)
 	if err != nil {
 		return nil, err
 	}
-	return &triage.Patcher{Model: triage.OpenAICompatModel{Endpoint: llm.Endpoint, APIKey: llm.APIKey, Model: llm.Model}, Sandbox: runner.DockerSandbox{Root: root, Image: envOr("ASTRIX_SANDBOX_IMAGE", defaultSandboxImage(command)), TestCommand: command}, MaxAttempts: 3}, nil
+	profile, profileErr := app.ResolveProjectProfile(root, configPath(root))
+	if profileErr == nil {
+		if strings.TrimSpace(os.Getenv("ASTRIX_TEST_COMMAND")) == "" && len(profile.TestCommand) > 0 {
+			var scoped []string
+			for _, id := range impactedTests {
+				if file, _, ok := strings.Cut(id, "::"); ok {
+					scoped = append(scoped, file)
+				}
+			}
+			command = profile.ScopedTestCommand(scoped)
+		}
+	} else {
+		profile = runner.ProjectProfile{}
+	}
+	image := envOr("ASTRIX_SANDBOX_IMAGE", profile.Image)
+	if image == "" {
+		image = defaultSandboxImage(command)
+	}
+	return &triage.Patcher{Model: triage.OpenAICompatModel{Endpoint: llm.Endpoint, APIKey: llm.APIKey, Model: llm.Model}, Sandbox: runner.DockerSandbox{Root: root, Image: image, TestCommand: command, Profile: &profile}, Root: root, MaxAttempts: 3}, nil
 }
 
 // projectTestCommand resolves an argument-safe test command. Repositories with

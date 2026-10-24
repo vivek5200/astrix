@@ -36,6 +36,7 @@ func BuildPrompt(context FailureContext) string {
 	fmt.Fprintf(&b, "SYSTEM REQUIREMENTS: Repair attempt %d of %d. Return ONLY a valid unified diff.\n", context.Attempt, maxAttempts)
 	b.WriteString("Use exact repository-relative paths in --- a/<path> and +++ b/<path> headers, followed by valid @@ hunk headers. Do not include prose or markdown fences. Do not edit any *_test.go file, test directory, or test assertion.\n")
 	b.WriteString("The source excerpt is the literal current on-disk code, not an earlier baseline. Make every removed hunk line match that excerpt exactly; do not reconstruct or revert to older code.\n")
+	b.WriteString("Example format (including the required hunk header):\n```diff\n--- a/calc.py\n+++ b/calc.py\n@@ -1,3 +1,3 @@\n def calculate(a, b):\n-    return a - b\n+    return a + b\n\n```\n")
 	if context.AllowTestChanges {
 		b.WriteString("Test-file changes were explicitly permitted; do not weaken assertions.\n")
 	} else {
@@ -50,8 +51,8 @@ func BuildPrompt(context FailureContext) string {
 		fmt.Fprintf(&b, "- %s:%d-%d (%s)\n", location.Path, location.StartLine, location.EndLine, location.Symbol)
 		if location.Source != "" {
 			b.WriteString("  Source excerpt:\n  ```\n")
-			for _, line := range strings.Split(location.Source, "\n") {
-				fmt.Fprintf(&b, "  %s\n", line)
+			for i, line := range strings.Split(location.Source, "\n") {
+				fmt.Fprintf(&b, "  %d | %s\n", location.StartLine+i, line)
 			}
 			b.WriteString("  ```\n")
 		}

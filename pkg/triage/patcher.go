@@ -27,8 +27,10 @@ type PolicyCheck func(context.Context, string) error
 
 // Patcher coordinates a model, policy gate, and isolated test sandbox.
 type Patcher struct {
-	Model            Model
-	Sandbox          Sandbox
+	Model   Model
+	Sandbox Sandbox
+	// Root is the workspace root used to synthesize diffs from full-file model replies.
+	Root             string
 	MaxAttempts      int
 	AllowTestChanges bool
 	Policy           PolicyCheck
@@ -91,7 +93,16 @@ func (p *Patcher) Repair(ctx context.Context, base FailureContext) (Result, erro
 			lastErr = fmt.Errorf("request repair patch: %w", err)
 			continue
 		}
-		patch, err := ExtractUnifiedDiff(response)
+		targets := make([]string, 0, len(base.SourceLocations))
+		seenTargets := make(map[string]bool, len(base.SourceLocations))
+		for _, location := range base.SourceLocations {
+			clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(location.Path)))
+			if clean != "" && !seenTargets[clean] {
+				seenTargets[clean] = true
+				targets = append(targets, clean)
+			}
+		}
+		patch, err := NormalizeModelResponse(response, p.Root, targets)
 		if err != nil {
 			previous = response
 			lastErr = err
@@ -160,6 +171,31 @@ func ValidatePatch(diff string, allowTestChanges bool) error {
 			if strings.HasSuffix(lower, "_test.go") || strings.Contains(lower, "/tests/") || strings.Contains(lower, "/test/") || strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx") || strings.HasSuffix(base, ".test.mts") || strings.HasSuffix(base, ".spec.mts") {
 				return fmt.Errorf("patch modifies protected test file %q", path)
 			}
+		}
+		// Rust tests commonly live inline in src/lib.rs instead of a *_test.rs
+		// file. A patch touching an inline test marker is therefore protected
+		// even when the source filename does not identify it as a test file.
+		inlineTestMarker := false
+		for _, line := range strings.Split(diff, "\n") {
+			if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
+				continue
+			}
+			if strings.HasPrefix(line, " ") {
+				inlineTestMarker = strings.Contains(line, "#[test]") || strings.Contains(line, "#[tokio::test]")
+				continue
+			}
+			if !strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "-") {
+				inlineTestMarker = false
+				continue
+			}
+			if inlineTestMarker || strings.Contains(line, "#[test]") || strings.Contains(line, "#[tokio::test]") {
+				for path := range files {
+					if strings.HasSuffix(strings.ToLower(path), ".rs") {
+						return fmt.Errorf("patch modifies inline Rust test in protected file %q", path)
+					}
+				}
+			}
+			inlineTestMarker = false
 		}
 	}
 	return nil

@@ -49,12 +49,12 @@ func TestJavaScriptAndUnknownTextFormatsStayInGraph(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"src/app.js::render", "src/app.test.js::testRender", "tests/main.rs::(file)", "config/custom.build::(file)"} {
+	for _, id := range []string{"src/app.js::render", "src/app.test.js::testRender", "tests/main.rs::main", "config/custom.build::(file)"} {
 		if _, ok := graph.Nodes[id]; !ok {
 			t.Errorf("graph missing %s; nodes=%v", id, graph.Nodes)
 		}
 	}
-	if !graph.Nodes["src/app.test.js::testRender"].IsTest || !graph.Nodes["tests/main.rs::(file)"].IsTest {
+	if !graph.Nodes["src/app.test.js::testRender"].IsTest || !graph.Nodes["tests/main.rs::main"].IsTest {
 		t.Fatal("JavaScript test and tests-directory fallback should be marked as test nodes")
 	}
 }

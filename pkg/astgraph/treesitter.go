@@ -2,6 +2,7 @@ package astgraph
 
 import (
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
@@ -12,25 +13,45 @@ import (
 	typescript "github.com/tree-sitter/tree-sitter-typescript/bindings/go"
 )
 
+//go:embed queries/*.scm
+var embeddedTagQueries embed.FS
+
 // NativeTreeSitterAdapter parses Python or TypeScript through the official Go bindings.
 type NativeTreeSitterAdapter struct {
 	LanguageName string
 	Language     *sitter.Language
+	QuerySource  string
+}
+
+// QueryLexicalAdapter applies custom Tree-sitter tag capture intent through the
+// dependency-free structural extractor when no grammar is registered.
+type QueryLexicalAdapter struct{ QuerySource string }
+
+func (a QueryLexicalAdapter) ExtractTreeSitter(path string, source []byte) (Graph, error) {
+	return (PolyglotExtractor{QuerySource: a.QuerySource}).Extract(path, source)
 }
 
 // PythonTreeSitter creates the Python grammar adapter.
 func PythonTreeSitter() TreeSitterAdapter {
-	return NativeTreeSitterAdapter{LanguageName: "python", Language: sitter.NewLanguage(python.Language())}
+	return NativeTreeSitterAdapter{LanguageName: "python", Language: sitter.NewLanguage(python.Language()), QuerySource: embeddedQuery("python.scm")}
 }
 
 // TypeScriptTreeSitter creates the TypeScript grammar adapter.
 func TypeScriptTreeSitter() TreeSitterAdapter {
-	return NativeTreeSitterAdapter{LanguageName: "typescript", Language: sitter.NewLanguage(typescript.LanguageTypescript())}
+	return NativeTreeSitterAdapter{LanguageName: "typescript", Language: sitter.NewLanguage(typescript.LanguageTypescript()), QuerySource: embeddedQuery("ts.scm")}
 }
 
 // TSXTreeSitter creates the TSX grammar adapter.
 func TSXTreeSitter() TreeSitterAdapter {
-	return NativeTreeSitterAdapter{LanguageName: "typescript", Language: sitter.NewLanguage(typescript.LanguageTSX())}
+	return NativeTreeSitterAdapter{LanguageName: "typescript", Language: sitter.NewLanguage(typescript.LanguageTSX()), QuerySource: embeddedQuery("ts.scm")}
+}
+
+func embeddedQuery(name string) string {
+	data, err := embeddedTagQueries.ReadFile("queries/" + name)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // DefaultTreeSitterAdapters returns built-in Go, JavaScript/TypeScript, and Python extractors.
@@ -61,6 +82,9 @@ func (a NativeTreeSitterAdapter) ExtractTreeSitter(path string, source []byte) (
 	root := tree.RootNode()
 	if root == nil {
 		return Graph{}, fmt.Errorf("Tree-sitter returned an empty syntax tree for %s", path)
+	}
+	if a.QuerySource != "" {
+		return extractWithQuery(path, source, root, a.Language, a.QuerySource)
 	}
 	g := NewGraph()
 	type definition struct {
@@ -123,6 +147,74 @@ func (a NativeTreeSitterAdapter) ExtractTreeSitter(path string, source []byte) (
 	return g, nil
 }
 
+func extractWithQuery(path string, source []byte, root *sitter.Node, language *sitter.Language, sourceQuery string) (Graph, error) {
+	query, qerr := sitter.NewQuery(language, sourceQuery)
+	if qerr != nil {
+		return Graph{}, fmt.Errorf("compile Tree-sitter query: %s", qerr.Message)
+	}
+	defer query.Close()
+	cursor := sitter.NewQueryCursor()
+	defer cursor.Close()
+	matches := cursor.Matches(query, root, source)
+	names := query.CaptureNames()
+	g := NewGraph()
+	type defRange struct {
+		id, name   string
+		start, end uint
+	}
+	var defs []defRange
+	var refs []struct {
+		start uint
+		name  string
+	}
+	for match := matches.Next(); match != nil; match = matches.Next() {
+		for _, capture := range match.Captures {
+			if int(capture.Index) >= len(names) {
+				continue
+			}
+			name := names[capture.Index]
+			node := capture.Node
+			value := nodeText(&node, source)
+			if strings.HasPrefix(name, "definition.") {
+				sym := value
+				for _, inner := range match.Captures {
+					if int(inner.Index) < len(names) && names[inner.Index] == "name" {
+						sym = nodeText(&inner.Node, source)
+						break
+					}
+				}
+				if sym == "" {
+					continue
+				}
+				id := filepath.ToSlash(path) + "::" + sym
+				start, end := node.StartPosition().Row+1, node.EndPosition().Row+1
+				digest := sha256.Sum256([]byte(value))
+				g.AddDefinition(SymbolNode{ID: id, Name: sym, File: filepath.ToSlash(path), Kind: strings.TrimPrefix(name, "definition."), StartLine: int(start), EndLine: int(end), IsTest: isTestFile(path) && looksLikeTest(sym), ContentHash: hex.EncodeToString(digest[:])})
+				defs = append(defs, defRange{id, sym, node.StartByte(), node.EndByte()})
+			} else if name == "reference.call" {
+				refs = append(refs, struct {
+					start uint
+					name  string
+				}{node.StartByte(), value})
+			}
+		}
+	}
+	for _, ref := range refs {
+		owner := ""
+		width := uint(^uint(0))
+		for _, d := range defs {
+			if ref.start >= d.start && ref.start <= d.end && d.end-d.start < width {
+				owner = d.id
+				width = d.end - d.start
+			}
+		}
+		if owner != "" {
+			g.AddReference(owner, ref.name)
+		}
+	}
+	return g, nil
+}
+
 func isDefinitionNode(language, kind string) bool {
 	if language == "python" {
 		return kind == "function_definition"
@@ -161,7 +253,15 @@ func callName(call *sitter.Node, source []byte) string {
 }
 func isTestFile(path string) bool {
 	base := strings.ToLower(filepath.Base(path))
-	return strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, ".test.js") || strings.HasSuffix(base, ".spec.js") || strings.HasSuffix(base, ".test.jsx") || strings.HasSuffix(base, ".spec.jsx") || strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx") || strings.HasSuffix(base, ".test.mjs") || strings.HasSuffix(base, ".spec.mjs") || strings.HasSuffix(base, ".test.mts") || strings.HasSuffix(base, ".spec.mts")
+	if strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py") || strings.HasSuffix(base, ".test.js") || strings.HasSuffix(base, ".spec.js") || strings.HasSuffix(base, ".test.jsx") || strings.HasSuffix(base, ".spec.jsx") || strings.HasSuffix(base, ".test.ts") || strings.HasSuffix(base, ".spec.ts") || strings.HasSuffix(base, ".test.tsx") || strings.HasSuffix(base, ".spec.tsx") || strings.HasSuffix(base, ".test.mjs") || strings.HasSuffix(base, ".spec.mjs") || strings.HasSuffix(base, ".test.mts") || strings.HasSuffix(base, ".spec.mts") {
+		return true
+	}
+	for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(path)), "/") {
+		if part == "test" || part == "tests" || part == "__tests__" {
+			return true
+		}
+	}
+	return false
 }
 func looksLikeTest(name string) bool {
 	lower := strings.ToLower(name)
