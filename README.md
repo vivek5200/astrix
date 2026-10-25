@@ -10,6 +10,63 @@ Astrix is a local-first DevOps verification engine. It selects tests from source
 
 > Astrix is under active development. Review policies, deployment integrations, and generated changes before using them in production workflows.
 
+## Quick start
+
+Choose the setup that fits your workflow. The installer and GitHub Action install Astrix; the Action also installs `axc` to validate `Astrixfile.ax`.
+
+### A. Install Astrix with one command
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vivek5200/astrix/main/install.sh | sh -s -- --bin-dir "$HOME/.local/bin"
+```
+
+Add `$HOME/.local/bin` to `PATH` if it is not already there. The installer downloads the latest published release and verifies its checksum when available. If you want to edit or validate `.ax` files directly, install the AxLang compiler too:
+
+```sh
+go install github.com/vivek5200/axlang/cmd/axc@latest
+```
+
+### B. Initialize a project and verify it
+
+From the root of a supported project, run:
+
+```sh
+astrix init && astrix verify
+```
+
+`astrix init` creates `Astrixfile.ax` and will not overwrite an existing file. `astrix verify` runs the detected project test command; set `ASTRIX_TEST_COMMAND` when your project needs a custom command. The Astrix CLI can create and use its config without the standalone `axc` binary; install `axc` separately to run compiler commands such as `axc check Astrixfile.ax`.
+
+### C. Run the composite GitHub Action
+
+Use a published Astrix release tag that contains `action.yml` in your workflow. Pinning the tag makes the CI version explicit:
+
+```yaml
+name: Astrix
+on: [push, pull_request]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vivek5200/astrix@<release-tag>
+        with:
+          version: <release-tag>
+          command: verify
+```
+
+The Action installs Astrix and `axc`, checks `Astrixfile.ax`, then runs the selected command. The `version` input pins the installed CLI to the same release as the Action. To initialize a repository, set `command: init`; run verification in a later workflow run after the generated config is committed. Replace both `<release-tag>` values with a published tag that includes the composite action.
+
+### D. Install with Go and configure MCP
+
+```sh
+go install github.com/vivek5200/astrix/cmd/astrix@latest
+go install github.com/vivek5200/axlang/cmd/axc@latest
+astrix mcp config
+```
+
+`astrix mcp config` prints copyable MCP setup for Claude Code, Cursor, and VS Code. Keep `astrix` on the `PATH` inherited by the MCP client. AxLang's `axc` is needed to check or format `.ax` files; the Astrix MCP server itself runs as `astrix mcp serve`.
+
 ## Components
 
 - **`astrix` CLI:** validates `Astrixfile.ax`, prints symbol graphs or diff blast radiuses, verifies changes, optionally requests a bounded repair, and serves MCP tools.

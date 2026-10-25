@@ -1,0 +1,36 @@
+# Keep the build context small and secret-free. The Go build needs module files,
+# command and package sources, plus embedded Tree-sitter query files.
+
+# VCS and CI
+.git
+.github
+
+# Docs and metadata (not needed to compile)
+*.md
+docs
+LICENSE
+
+# Tests and local artifacts
+e2e
+**/*_test.go
+.pytest_cache
+coverage.out
+coverage.html
+.astrix
+bin
+
+# Local environment / secrets must never enter the build context
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.ssh
+.aws
+.config/gcloud
+**/secrets/**
+**/credentials/**
+
+# Vendored modules are downloaded from go.mod/go.sum instead
+vendor

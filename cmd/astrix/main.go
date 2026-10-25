@@ -28,7 +28,7 @@ import (
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 func run(args []string, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: astrix <check|graph|verify|mcp serve> [options]")
+		fmt.Fprintln(stderr, "usage: astrix <check|graph|verify|init|mcp serve|mcp config> [options]")
 		return 2
 	}
 	ctx := context.Background()
@@ -198,14 +198,56 @@ func run(args []string, stdout, stderr *os.File) int {
 		storeVerificationCache(root, stderr)
 		fmt.Fprintf(stdout, "repair patch passed isolated tests after %d attempt(s) and was applied\n", result.Attempts)
 		return 0
+	case "init":
+		force := false
+		dir := ""
+		for i := 1; i < len(args); i++ {
+			arg := args[i]
+			switch {
+			case arg == "--force":
+				force = true
+			case strings.HasPrefix(arg, "-"):
+				fmt.Fprintf(stderr, "unknown init option %q\nusage: astrix init [--force] [dir]\n", arg)
+				return 2
+			case dir != "":
+				fmt.Fprintln(stderr, "usage: astrix init [--force] [dir]")
+				return 2
+			default:
+				dir = arg
+			}
+		}
+		if dir == "" {
+			dir = "."
+		}
+		if err := app.InitProject(dir, force, stdout); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "mcp":
-		if len(args) < 2 || args[1] != "serve" {
-			fmt.Fprintln(stderr, "usage: astrix mcp serve")
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: astrix mcp <serve|config>")
 			return 2
 		}
-		return serveMCP(ctx, root, os.Stdin, stdout, stderr)
+		switch args[1] {
+		case "serve":
+			if len(args) != 2 {
+				fmt.Fprintln(stderr, "usage: astrix mcp serve")
+				return 2
+			}
+			return serveMCP(ctx, root, os.Stdin, stdout, stderr)
+		case "config":
+			if len(args) != 2 {
+				fmt.Fprintln(stderr, "usage: astrix mcp config")
+				return 2
+			}
+			return printMCPConfig(stdout, stderr)
+		default:
+			fmt.Fprintf(stderr, "unknown mcp subcommand %q\nusage: astrix mcp <serve|config>\n", args[1])
+			return 2
+		}
 	default:
-		fmt.Fprintf(stderr, "unknown command %q\nusage: astrix <check|graph|verify|mcp serve> [options]\n", args[0])
+		fmt.Fprintf(stderr, "unknown command %q\nusage: astrix <check|graph|verify|init|mcp serve|mcp config> [options]\n", args[0])
 		return 2
 	}
 }
@@ -473,6 +515,64 @@ func writeJSON(out *os.File, value any, stderr *os.File) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	return 0
+}
+
+// printMCPConfig writes copy-pasteable MCP client setup instructions.
+func printMCPConfig(stdout, stderr *os.File) int {
+	type serverEntry struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	type cursorConfig struct {
+		MCPServers map[string]serverEntry `json:"mcpServers"`
+	}
+	type vscodeServerEntry struct {
+		Type    string   `json:"type"`
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	type vscodeConfig struct {
+		Servers map[string]vscodeServerEntry `json:"servers"`
+	}
+	entry := serverEntry{Command: "astrix", Args: []string{"mcp", "serve"}}
+	vscodeEntry := vscodeServerEntry{Type: "stdio", Command: "astrix", Args: []string{"mcp", "serve"}}
+	cursor, err := json.MarshalIndent(cursorConfig{MCPServers: map[string]serverEntry{"astrix": entry}}, "", "  ")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	vscode, err := json.MarshalIndent(vscodeConfig{Servers: map[string]vscodeServerEntry{"astrix": vscodeEntry}}, "", "  ")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	fmt.Fprint(stdout, strings.Join([]string{
+		"Astrix MCP server setup",
+		"",
+		"Install Astrix first (see https://github.com/vivek5200/astrix#installation) and ensure the astrix binary is on the PATH inherited by your editor.",
+		"The server uses the editor's workspace as its working directory, so open the target repository in the client before connecting.",
+		"",
+		"1. Claude Code",
+		"   Run this in a terminal from your repository root:",
+		"",
+		"   claude mcp add astrix -- astrix mcp serve",
+		"",
+		"2. Cursor",
+		"   Add the following block to ~/.cursor/mcp.json:",
+		"",
+		"```json",
+		string(cursor),
+		"```",
+		"",
+		"3. VS Code / Antigravity",
+		"   Add the following block to .vscode/mcp.json (VS Code 1.99+ or the \"MCP: Add Server\" command):",
+		"",
+		"```json",
+		string(vscode),
+		"```",
+		"",
+	}, "\n"))
 	return 0
 }
 

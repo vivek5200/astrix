@@ -1,0 +1,107 @@
+# Composite GitHub Action for the Astrix agentic control loop.
+#
+# Installs astrix + astrixd from this repository's releases (via the install.sh
+# at the repo root, which doubles as the action's installer) plus the `axc`
+# Astrixfile compiler from the vivek5200/axlang releases, validates the config,
+# then runs the requested astrix subcommand.
+#
+# Note: composite actions do not support `choices` on inputs, so the allowed
+# values for `command` (check | graph | verify | init) are documented in the
+# input description and enforced by the shell case in the final step.
+
+name: 'Astrix Agentic Control Loop'
+description: 'Install astrix and the axc compiler, then run check, graph, verify, or init against your repository.'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  config:
+    description: 'Path to the Astrixfile.ax manifest, resolved relative to working-directory.'
+    default: 'Astrixfile.ax'
+  command:
+    description: 'astrix subcommand to run. Allowed values: check | graph | verify | init (no real `choices` support in composite actions; unknown values fail with exit 1).'
+    default: 'verify'
+  fix:
+    description: 'Whether `astrix verify` runs with --fix to apply repair patches. Only used when command is verify. Set to "true" or "false".'
+    default: 'false'
+  working-directory:
+    description: 'Directory the commands run in; relative config paths resolve against it.'
+    default: '.'
+  version:
+    description: 'astrix release tag to install (e.g. v0.5.0). "latest" installs the newest release.'
+    default: 'latest'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install astrix and astrixd
+      shell: bash
+      env:
+        ASTRIX_VERSION: ${{ inputs.version }}
+        ASTRIX_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        install_sh="$ASTRIX_ACTION_PATH/install.sh"
+        args=(--bin-dir "$HOME/.local/bin")
+        # The installer defaults to the latest release; only pin when asked.
+        if [ "$ASTRIX_VERSION" != "latest" ]; then
+          args+=(--astrix-version "$ASTRIX_VERSION")
+        fi
+        sh "$install_sh" "${args[@]}"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Install axc (Astrixfile compiler)
+      shell: bash
+      run: |
+        set -euo pipefail
+        # axc validates Astrixfile.ax. The axlang installer falls back to
+        # `go install` when no matching release archive exists, so this works
+        # even before axlang publishes tagged artifacts.
+        curl -sSfL https://raw.githubusercontent.com/vivek5200/axlang/main/install.sh | sh -s -- --bin-dir "$HOME/.local/bin"
+
+    # Skipped for `init` because init is what creates the Astrixfile.
+    - name: Validate Astrixfile with axc
+      if: inputs.command != 'init'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ASTRIX_CONFIG: ${{ inputs.config }}
+      run: axc check "$ASTRIX_CONFIG"
+
+    - name: Run astrix ${{ inputs.command }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        ASTRIX_COMMAND: ${{ inputs.command }}
+        ASTRIX_CONFIG: ${{ inputs.config }}
+        ASTRIX_FIX: ${{ inputs.fix }}
+      run: |
+        set -euo pipefail
+        case "$ASTRIX_FIX" in
+          true|false) ;;
+          *) echo "Error: fix must be 'true' or 'false'" >&2; exit 1 ;;
+        esac
+        case "$ASTRIX_COMMAND" in
+          check)
+            astrix check "$ASTRIX_CONFIG"
+            ;;
+          graph)
+            astrix graph .
+            ;;
+          verify)
+            if [ "$ASTRIX_FIX" = "true" ]; then
+              astrix verify --fix
+            else
+              astrix verify
+            fi
+            ;;
+          init)
+            astrix init
+            ;;
+          *)
+            echo "Error: unsupported command '$ASTRIX_COMMAND' (allowed values: check | graph | verify | init)" >&2
+            exit 1
+            ;;
+        esac
