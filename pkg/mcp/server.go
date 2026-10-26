@@ -75,11 +75,17 @@ func (s *Server) Serve(ctx context.Context, input io.Reader, output io.Writer) e
 			if writeErr := s.write(writer, response{JSONRPC: "2.0", Error: &rpcError{Code: -32700, Message: "parse error"}}); writeErr != nil {
 				return writeErr
 			}
+			if err := writer.Flush(); err != nil {
+				return err
+			}
 			continue
 		}
 		resp, notify := s.handle(ctx, req)
 		if !notify {
 			if err := s.write(writer, resp); err != nil {
+				return err
+			}
+			if err := writer.Flush(); err != nil {
 				return err
 			}
 		}

@@ -1,12 +1,69 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestServeFlushesResponseBeforeInputEOF(t *testing.T) {
+	server := NewServer(nil)
+	serverInput, clientInput := io.Pipe()
+	clientOutput, serverOutput := io.Pipe()
+	t.Cleanup(func() {
+		_ = clientInput.Close()
+		_ = clientOutput.Close()
+	})
+	serveDone := make(chan error, 1)
+	go func() {
+		err := server.Serve(context.Background(), serverInput, serverOutput)
+		_ = serverOutput.Close()
+		serveDone <- err
+	}()
+
+	if _, err := io.WriteString(clientInput, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	response := make(chan string, 1)
+	readErr := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(clientOutput).ReadString('\n')
+		if err != nil {
+			readErr <- err
+			return
+		}
+		response <- line
+	}()
+
+	var line string
+	select {
+	case line = <-response:
+	case err := <-readErr:
+		t.Fatalf("read MCP response: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("server did not flush its response before input EOF")
+	}
+
+	if err := clientInput.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(line), &got); err != nil {
+		t.Fatalf("invalid JSON-RPC response %q: %v", line, err)
+	}
+	if got["id"] != float64(1) {
+		t.Fatalf("response id=%v, want 1", got["id"])
+	}
+}
 
 func TestServeHandlesInitializeToolCallAndNotification(t *testing.T) {
 	server := NewServer(map[string]Handler{"astrix_get_blast_radius": func(_ context.Context, args map[string]any) (any, error) {
