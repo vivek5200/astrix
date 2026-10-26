@@ -587,7 +587,25 @@ func serveMCP(ctx context.Context, root string, input *os.File, output, stderr *
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"impact": impact, "changes": changes}, nil
+		changeResults := make([]map[string]any, 0, len(changes))
+		for _, change := range changes {
+			item := map[string]any{
+				"path":     change.Path,
+				"new_file": change.NewFile,
+				"deleted":  change.Deleted,
+				"ranges":   append([]ingress.LineRange{}, change.Ranges...),
+			}
+			if change.OldPath != "" {
+				item["old_path"] = change.OldPath
+			}
+			changeResults = append(changeResults, item)
+		}
+		impactResult := map[string]any{
+			"changed_symbols":  append([]string{}, impact.ChangedSymbols...),
+			"impacted_symbols": append([]string{}, impact.ImpactedSymbols...),
+			"tests":            append([]string{}, impact.Tests...),
+		}
+		return map[string]any{"impact": impactResult, "changes": changeResults}, nil
 	}
 	handlers["astrix_evaluate_policy"] = func(ctx context.Context, args map[string]any) (any, error) {
 		raw, ok := args["intent"]
@@ -620,7 +638,7 @@ func serveMCP(ctx context.Context, root string, input *os.File, output, stderr *
 		if err = app.RunTests(ctx, root, impact); err != nil {
 			return nil, err
 		}
-		return map[string]any{"tests": impact.Tests, "passed": true}, nil
+		return map[string]any{"tests": append([]string{}, impact.Tests...), "passed": true}, nil
 	}
 	server := mcp.NewServer(handlers)
 	if err := server.Serve(ctx, input, output); err != nil {
