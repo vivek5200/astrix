@@ -16,7 +16,7 @@ Glama evaluates Astrix's MCP tool definitions to show how clearly agents can und
 
 <p align="center">
   <a href="https://glama.ai/mcp/servers/vivek5200/astrix">
-    <img src="https://glama.ai/mcp/servers/vivek5200/astrix/badges/score.svg" alt="Astrix MCP server quality score on Glama">
+    <img src="https://glama.ai/mcp/servers/vivek5200/astrix/badges/card.svg" alt="Astrix MCP server quality and maintenance score on Glama">
   </a>
 </p>
 
