@@ -1,7 +1,6 @@
 # Astrix
 
-[![CI](https://github.com/vivek5200/astrix/actions/workflows/ci.yml/badge.svg)](https://github.com/vivek5200/astrix/actions/workflows/ci.yml)
-[![astrix MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/vivek5200/astrix/badges/card.svg)](https://glama.ai/mcp/servers/vivek5200/astrix)
+[![CI](https://github.com/vivek5200/astrix/actions/workflows/ci.yml/badge.svg)](https://github.com/vivek5200/astrix/actions/workflows/ci.yml) [![Glama quality score](https://glama.ai/mcp/servers/vivek5200/astrix/badges/score.svg)](https://glama.ai/mcp/servers/vivek5200/astrix)
 
 Astrix is a local-first DevOps verification engine. It selects tests from source-level dependency impact, enforces AxLang-authored policies, optionally runs bounded LLM-assisted repair in an isolated sandbox, and exposes analysis tools over MCP.
 
